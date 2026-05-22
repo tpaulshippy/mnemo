@@ -5,8 +5,8 @@ package cmd
 //   - Claude Code: Installs a skill at ~/.claude/skills/mnemo/ that auto-activates
 //     on context-related keywords
 //   - Claude Desktop: Adds mnemo as an MCP server in claude_desktop_config.json
-//   - OpenCode: Adds mnemo as an MCP server in opencode.json and installs a plugin
-//     that injects mnemo context during session compaction
+//   - OpenCode: Installs a plugin that provides mnemo tools and injects
+//     project memory during session compaction
 
 import (
 	"encoding/json"
@@ -26,7 +26,7 @@ var installCmd = &cobra.Command{
 
 This command will:
   1. Install Claude Code skill for context keywords
-  2. Install OpenCode MCP server and plugin for session compaction
+  2. Install OpenCode plugin for mnemo tools and session compaction
   3. Configure MCP server in Claude Desktop (if installed)
 
 Optionally specify a tool to install only for that tool:
