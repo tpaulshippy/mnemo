@@ -573,6 +573,7 @@ const opencodePlugin = `/**
 
 import { execSync } from 'child_process';
 import { basename } from 'path';
+import { tool } from '@opencode-ai/plugin';
 
 function runMnemo(args) {
   try {
@@ -585,10 +586,6 @@ function runMnemo(args) {
   }
 }
 
-function getProjectName(cwd) {
-  return basename(cwd);
-}
-
 function getMnemoContext(project) {
   const context = runMnemo(['context', project]);
   if (context.includes('Error') || context.includes('No context')) {
@@ -599,11 +596,42 @@ function getMnemoContext(project) {
 
 export default async ({ project }) => {
   return {
+    tool: {
+      mnemo_search: tool({
+        description: 'Search past AI coding sessions for relevant context',
+        args: {
+          query: tool.schema.string(),
+          limit: tool.schema.number().optional(),
+        },
+        async execute(args) {
+          return runMnemo(['search', args.query, '--limit', String(args.limit ?? 10)]);
+        },
+      }),
+      mnemo_context: tool({
+        description: 'Get context summary for a project from past AI sessions',
+        args: {
+          project: tool.schema.string(),
+        },
+        async execute(args) {
+          return getMnemoContext(args.project) || 'No context available.';
+        },
+      }),
+      mnemo_recent: tool({
+        description: 'Show recent AI coding sessions',
+        args: {
+          days: tool.schema.number().optional(),
+        },
+        async execute(args) {
+          const d = args.days ?? 7;
+          return runMnemo(['recent', '-d', String(d)]);
+        },
+      }),
+    },
     'experimental.session.compacting': async (input, output) => {
-      const projectName = getProjectName(project.path);
+      const projectName = basename(project.path);
       const mnemoContext = getMnemoContext(projectName);
       if (mnemoContext) {
-        output.summary = output.summary + '\n\n---\n## Project Memory (mnemo)\n' + mnemoContext + '\n---';
+        output.context.push('## Project Memory (mnemo)\n' + mnemoContext);
       }
     },
   };
@@ -615,6 +643,9 @@ const opencodePackageJSON = `{
   "version": "1.0.0",
   "description": "Mnemo project memory plugin for OpenCode",
   "main": "mnemo-plugin.ts",
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "@opencode-ai/plugin": "latest"
+  }
 }
 `
