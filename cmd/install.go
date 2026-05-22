@@ -5,7 +5,8 @@ package cmd
 //   - Claude Code: Installs a skill at ~/.claude/skills/mnemo/ that auto-activates
 //     on context-related keywords
 //   - Claude Desktop: Adds mnemo as an MCP server in claude_desktop_config.json
-//   - OpenCode: Installs a plugin that injects mnemo context during session compaction
+//   - OpenCode: Adds mnemo as an MCP server in opencode.json and installs a plugin
+//     that injects mnemo context during session compaction
 
 import (
 	"encoding/json"
@@ -19,14 +20,17 @@ import (
 )
 
 var installCmd = &cobra.Command{
-	Use:   "install",
+	Use:   "install [tool]",
 	Short: "Install mnemo plugins and MCP server for AI tools",
 	Long: `Install mnemo plugins for Claude Code and OpenCode to enable automatic context injection.
 
 This command will:
   1. Install Claude Code skill for context keywords
-  2. Install OpenCode plugin for session compaction
+  2. Install OpenCode MCP server and plugin for session compaction
   3. Configure MCP server in Claude Desktop (if installed)
+
+Optionally specify a tool to install only for that tool:
+  mnemo install opencode
 
 The MCP server provides tools like mnemo_search, mnemo_context, and mnemo_recent
 directly in Claude Desktop.`,
@@ -51,11 +55,73 @@ directly in Claude Desktop.`,
 		fmt.Println("Features enabled:")
 		fmt.Println("  - Claude Code: Skill auto-activates on context keywords")
 		fmt.Println("  - Claude Desktop: MCP tools (mnemo_search, mnemo_context, mnemo_recent)")
-		fmt.Println("  - OpenCode: Context survives session compaction")
+		fmt.Println("  - OpenCode: MCP tools + context survives session compaction")
 		fmt.Println("  - Raycast: Search, context, and recent commands (macOS)")
 		fmt.Println("  - Background indexer: Sessions re-indexed every 30 minutes")
 		fmt.Println()
-		fmt.Println("Note: Restart Claude Desktop to activate MCP server.")
+		fmt.Println("Note: Restart OpenCode/Claude Desktop to activate MCP server.")
+	},
+}
+
+var installOpencodeCmd = &cobra.Command{
+	Use:   "opencode",
+	Short: "Install mnemo MCP server and plugin for OpenCode",
+	Long: `Install mnemo as an MCP server in OpenCode's config and install the session compaction plugin.
+
+This command will:
+  1. Add mnemo MCP server to ~/.config/opencode/opencode.json
+  2. Install OpenCode plugin for session compaction context injection
+
+The MCP server provides mnemo_search, mnemo_context, and mnemo_recent tools in OpenCode.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			fmt.Printf("Error: cannot determine home directory: %v\n", err)
+			return
+		}
+
+		mnemoPath, err := exec.LookPath("mnemo")
+		if err != nil {
+			for _, p := range []string{
+				filepath.Join(home, "bin", "mnemo"),
+				filepath.Join(home, ".local", "bin", "mnemo"),
+				"/usr/local/bin/mnemo",
+				"/opt/homebrew/bin/mnemo",
+			} {
+				if _, err := os.Stat(p); err == nil {
+					mnemoPath = p
+					break
+				}
+			}
+		}
+		if mnemoPath == "" {
+			mnemoPath = "mnemo"
+		}
+
+		fmt.Println("Installing mnemo for OpenCode...")
+		fmt.Println()
+
+		configPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+		if err := installOpencodeMCPConfig(configPath, mnemoPath); err != nil {
+			fmt.Printf("  ✗ MCP server config failed: %v\n", err)
+		} else {
+			fmt.Println("  ✓ MCP server configured in opencode.json")
+		}
+
+		opencodePluginDir := filepath.Join(home, ".config", "opencode", "plugins", "mnemo")
+		if err := os.MkdirAll(opencodePluginDir, 0755); err == nil {
+			pluginPath := filepath.Join(opencodePluginDir, "mnemo-plugin.ts")
+			pkgPath := filepath.Join(opencodePluginDir, "package.json")
+			if os.WriteFile(pluginPath, []byte(opencodePlugin), 0644) == nil &&
+				os.WriteFile(pkgPath, []byte(opencodePackageJSON), 0644) == nil {
+				fmt.Println("  ✓ OpenCode plugin installed")
+			} else {
+				fmt.Println("  ✗ OpenCode plugin install failed")
+			}
+		}
+
+		fmt.Println()
+		fmt.Println("Installation complete! Restart OpenCode to activate.")
 	},
 }
 
@@ -92,6 +158,51 @@ func installMCPConfig(configPath, mnemoPath string) error {
 	}
 
 	// Write config back
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+
+	if err := os.WriteFile(configPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write config: %w", err)
+	}
+
+	return nil
+}
+
+// installOpencodeMCPConfig adds or updates mnemo MCP server in opencode.json
+func installOpencodeMCPConfig(configPath, mnemoPath string) error {
+	var config map[string]interface{}
+
+	if data, err := os.ReadFile(configPath); err == nil {
+		if err := json.Unmarshal(data, &config); err != nil {
+			return fmt.Errorf("failed to parse existing config: %w", err)
+		}
+	} else if os.IsNotExist(err) {
+		if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
+			return fmt.Errorf("failed to create config directory: %w", err)
+		}
+		config = map[string]interface{}{
+			"$schema": "https://opencode.ai/config.json",
+		}
+	} else {
+		return fmt.Errorf("failed to read config: %w", err)
+	}
+
+	// Ensure mcp exists
+	mcp, ok := config["mcp"].(map[string]interface{})
+	if !ok {
+		mcp = make(map[string]interface{})
+		config["mcp"] = mcp
+	}
+
+	// Add/update mnemo server using opencode MCP format
+	mcp["mnemo"] = map[string]interface{}{
+		"type":    "local",
+		"command": []string{mnemoPath, "serve"},
+		"enabled": true,
+	}
+
 	data, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
@@ -149,6 +260,12 @@ func runInstallPlugins(home string) []string {
 	configPath := filepath.Join(claudeDesktopConfigDir, "claude_desktop_config.json")
 	if err := installMCPConfig(configPath, mnemoPath); err == nil {
 		results = append(results, "  ✓ MCP server configured")
+	}
+
+	// OpenCode MCP server
+	opencodeConfigPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+	if err := installOpencodeMCPConfig(opencodeConfigPath, mnemoPath); err == nil {
+		results = append(results, "  ✓ OpenCode MCP server configured")
 	}
 
 	// OpenCode plugin
@@ -394,6 +511,7 @@ exit 0
 
 func init() {
 	rootCmd.AddCommand(installCmd)
+	installCmd.AddCommand(installOpencodeCmd)
 }
 
 const claudeCodeSkill = `# Mnemo Project Memory
@@ -479,53 +597,16 @@ function getMnemoContext(project) {
   return context;
 }
 
-export default {
-  name: 'mnemo',
-  version: '1.0.0',
-  description: 'Project memory from past AI coding sessions',
-
-  tools: [
-    {
-      name: 'mnemo_search',
-      description: 'Search past AI coding sessions for relevant context',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'Search query' },
-          limit: { type: 'number', description: 'Max results (default: 10)' },
-        },
-        required: ['query'],
-      },
-      execute: async (params) => {
-        return runMnemo(['search', params.query, '--limit', (params.limit || 10).toString()]);
-      },
+export default async ({ project }) => {
+  return {
+    'experimental.session.compacting': async (input, output) => {
+      const projectName = getProjectName(project.path);
+      const mnemoContext = getMnemoContext(projectName);
+      if (mnemoContext) {
+        output.summary = output.summary + '\n\n---\n## Project Memory (mnemo)\n' + mnemoContext + '\n---';
+      }
     },
-    {
-      name: 'mnemo_context',
-      description: 'Get context summary for a project',
-      parameters: {
-        type: 'object',
-        properties: {
-          project: { type: 'string', description: 'Project name' },
-        },
-        required: ['project'],
-      },
-      execute: async (params) => {
-        return getMnemoContext(params.project) || 'No context available.';
-      },
-    },
-  ],
-
-  experimental: {
-    session: {
-      compacting: async (summary, ctx) => {
-        const project = getProjectName(ctx.cwd);
-        const mnemoContext = getMnemoContext(project);
-        if (!mnemoContext) return summary;
-        return summary + '\n\n---\n## Project Memory (mnemo)\n' + mnemoContext + '\n---';
-      },
-    },
-  },
+  };
 };
 `
 
