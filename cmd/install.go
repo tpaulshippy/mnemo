@@ -492,67 +492,66 @@ const opencodePlugin = `/**
  * Provides persistent project memory across sessions
  */
 
-import { execSync } from 'child_process';
-import { basename } from 'path';
-import { tool } from '@opencode-ai/plugin';
+import { tool } from "@opencode-ai/plugin";
+import { execSync } from "child_process";
+import { basename } from "path";
 
 function runMnemo(args) {
   try {
-    return execSync('mnemo ' + args.join(' '), {
-      encoding: 'utf-8',
+    return execSync(["mnemo", ...args].join(" "), {
+      encoding: "utf-8",
       timeout: 10000,
     }).trim();
   } catch (error) {
-    return 'Error: ' + error.message;
+    return "Error: " + error.message;
   }
 }
 
 function getMnemoContext(project) {
-  const context = runMnemo(['context', project]);
-  if (context.includes('Error') || context.includes('No context')) {
-    return '';
+  const context = runMnemo(["context", project]);
+  if (context.includes("Error") || context.includes("No context")) {
+    return "";
   }
   return context;
 }
 
-export default async ({ project }) => {
+export const MnemoPlugin = async ({ project }) => {
   return {
     tool: {
       mnemo_search: tool({
-        description: 'Search past AI coding sessions for relevant context',
+        description: "Search past AI coding sessions for relevant context",
         args: {
           query: tool.schema.string(),
           limit: tool.schema.number().optional(),
         },
         async execute(args) {
-          return runMnemo(['search', args.query, '--limit', String(args.limit ?? 10)]);
+          return runMnemo(["search", args.query, "--limit", String(args.limit ?? 10)]);
         },
       }),
       mnemo_context: tool({
-        description: 'Get context summary for a project from past AI sessions',
+        description: "Get context summary for a project from past AI sessions",
         args: {
           project: tool.schema.string(),
         },
         async execute(args) {
-          return getMnemoContext(args.project) || 'No context available.';
+          return getMnemoContext(args.project) || "No context available.";
         },
       }),
       mnemo_recent: tool({
-        description: 'Show recent AI coding sessions',
+        description: "Show recent AI coding sessions",
         args: {
           days: tool.schema.number().optional(),
         },
         async execute(args) {
-          const d = args.days ?? 7;
-          return runMnemo(['recent', '-d', String(d)]);
+          return runMnemo(["recent", "-d", String(args.days ?? 7)]);
         },
       }),
     },
-    'experimental.session.compacting': async (input, output) => {
+    "experimental.session.compacting": async (input, output) => {
       const projectName = basename(project.path);
       const mnemoContext = getMnemoContext(projectName);
       if (mnemoContext) {
-        output.context.push('## Project Memory (mnemo)\n' + mnemoContext);
+        output.context.push("## Project Memory (mnemo)\n" + mnemoContext);
       }
     },
   };
