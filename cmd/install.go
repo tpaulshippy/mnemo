@@ -5,7 +5,8 @@ package cmd
 //   - Claude Code: Installs a skill at ~/.claude/skills/mnemo/ that auto-activates
 //     on context-related keywords
 //   - Claude Desktop: Adds mnemo as an MCP server in claude_desktop_config.json
-//   - OpenCode: Adds mnemo as an MCP server in opencode.json
+//   - OpenCode: Adds mnemo as an MCP server in opencode.json and installs a plugin
+//     that injects project memory into session compaction
 
 import (
 	"encoding/json"
@@ -26,7 +27,8 @@ var installCmd = &cobra.Command{
 This command will:
   1. Install Claude Code skill for context keywords
   2. Configure MCP server in OpenCode (~/.config/opencode/opencode.json)
-  3. Configure MCP server in Claude Desktop (if installed)
+  3. Install OpenCode compaction plugin (injects mnemo context on session compaction)
+  4. Configure MCP server in Claude Desktop (if installed)
 
 Optionally specify a tool to install only for that tool:
   mnemo install opencode
@@ -54,6 +56,7 @@ The MCP server provides mnemo_search, mnemo_context, and mnemo_recent tools.`,
 		fmt.Println("  - Claude Code: Skill auto-activates on context keywords")
 		fmt.Println("  - Claude Desktop: MCP tools (mnemo_search, mnemo_context, mnemo_recent)")
 		fmt.Println("  - OpenCode: MCP tools (mnemo_search, mnemo_context, mnemo_recent)")
+		fmt.Println("  - OpenCode: Project memory injected on session compaction")
 		fmt.Println("  - Raycast: Search, context, and recent commands (macOS)")
 		fmt.Println("  - Background indexer: Sessions re-indexed every 30 minutes")
 		fmt.Println()
@@ -63,10 +66,12 @@ The MCP server provides mnemo_search, mnemo_context, and mnemo_recent tools.`,
 
 var installOpencodeCmd = &cobra.Command{
 	Use:   "opencode",
-	Short: "Configure mnemo MCP server for OpenCode",
-	Long: `Add mnemo as an MCP server in ~/.config/opencode/opencode.json.
+	Short: "Configure mnemo MCP server and compaction plugin for OpenCode",
+	Long: `Add mnemo as an MCP server in ~/.config/opencode/opencode.json and install
+the compaction plugin that injects project memory when a session is compacted.
 
-Provides mnemo_search, mnemo_context, and mnemo_recent tools in OpenCode.`,
+The MCP server provides mnemo_search, mnemo_context, and mnemo_recent tools.
+The compaction plugin ensures past session context survives context resets.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -100,6 +105,12 @@ Provides mnemo_search, mnemo_context, and mnemo_recent tools in OpenCode.`,
 			fmt.Printf("  ✗ MCP server config failed: %v\n", err)
 		} else {
 			fmt.Println("  ✓ MCP server configured in opencode.json")
+		}
+
+		if err := installOpencodeCompactionPlugin(home, mnemoPath); err != nil {
+			fmt.Printf("  ✗ Compaction plugin install failed: %v\n", err)
+		} else {
+			fmt.Println("  ✓ Compaction plugin installed")
 		}
 
 		fmt.Println()
@@ -195,6 +206,22 @@ func installOpencodeMCPConfig(configPath, mnemoPath string) error {
 	return nil
 }
 
+// installOpencodeCompactionPlugin writes a minimal plugin to ~/.config/opencode/plugins/
+// that injects mnemo project context into opencode's session compaction prompt.
+// It uses no external dependencies — just shell exec of the mnemo binary.
+func installOpencodeCompactionPlugin(home, mnemoPath string) error {
+	pluginDir := filepath.Join(home, ".config", "opencode", "plugins", "mnemo-compaction")
+	if err := os.MkdirAll(pluginDir, 0755); err != nil {
+		return fmt.Errorf("failed to create plugin directory: %w", err)
+	}
+	pluginPath := filepath.Join(pluginDir, "mnemo-compaction.js")
+	content := fmt.Sprintf(opencodeCompactionPlugin, mnemoPath)
+	if err := os.WriteFile(pluginPath, []byte(content), 0644); err != nil {
+		return fmt.Errorf("failed to write plugin: %w", err)
+	}
+	return nil
+}
+
 // runInstallPlugins installs all mnemo integrations and returns result strings.
 // Used by both the install command and onboarding.
 func runInstallPlugins(home string) []string {
@@ -242,10 +269,13 @@ func runInstallPlugins(home string) []string {
 		results = append(results, "  ✓ MCP server configured")
 	}
 
-	// OpenCode MCP server
+	// OpenCode MCP server + compaction plugin
 	opencodeConfigPath := filepath.Join(home, ".config", "opencode", "opencode.json")
 	if err := installOpencodeMCPConfig(opencodeConfigPath, mnemoPath); err == nil {
 		results = append(results, "  ✓ OpenCode MCP server configured")
+	}
+	if err := installOpencodeCompactionPlugin(home, mnemoPath); err == nil {
+		results = append(results, "  ✓ OpenCode compaction plugin installed")
 	}
 
 	// Background indexer (periodic re-index every 30 min)
@@ -533,4 +563,30 @@ mnemo index
 - Search uses SQLite FTS5 with BM25 ranking
 - Results show highlighted snippets with context
 - Use ` + "`mnemo index --force`" + ` to rebuild if data seems stale
+`
+
+// opencodeCompactionPlugin is a minimal opencode plugin (no external deps) that
+// injects mnemo project context into the session compaction prompt.
+// Uses %s as a placeholder for the mnemo binary path.
+const opencodeCompactionPlugin = `import { execSync } from "child_process";
+import { basename } from "path";
+
+export const MnemoCompactionPlugin = async ({ project }) => {
+  return {
+    "experimental.session.compacting": async (input, output) => {
+      try {
+        const projectName = basename(project.path);
+        const context = execSync("%s context " + projectName, {
+          encoding: "utf-8",
+          timeout: 10000,
+        }).trim();
+        if (context && !context.includes("No context")) {
+          output.context.push("## Project Memory (mnemo)\n" + context);
+        }
+      } catch (_) {
+        // mnemo unavailable — skip silently
+      }
+    },
+  };
+};
 `
